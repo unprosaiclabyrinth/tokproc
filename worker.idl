@@ -1,0 +1,11 @@
+module ShardWorkerModule {
+    typedef sequence<long> long_seq;
+    typedef sequence<float> float_seq;
+    typedef sequence<string> str_seq;
+
+    interface ShardWorker {
+        long_seq byte_pair_encode(in str_seq shard);
+        str_seq sample_sliding_window_data(in long window_size, in long stride);
+        float_seq embed(in long_seq token_ids);
+    };
+};
