@@ -1,0 +1,8 @@
+module TokenProcessorModule {
+    interface TokenProcessor {
+        void process_text(in string text);
+        string get_worker_ior(in string worker_ior);
+    };
+};
+        
+        
