@@ -11,6 +11,8 @@
 import sys
 import tiktoken
 import random
+import configparser
+import boto3
 
 from tensorflow import convert_to_tensor, float32
 from tensorflow.data import Dataset
@@ -23,39 +25,60 @@ import TokenProcessor, TokenProcessor__POA
 
 
 class Worker_i(TokenProcessor__POA.Worker):
+    def echo_test(self, message):
+        """
+        Function to test client-server communication
+        """
+        print(f'Got "{message}", sending it back...')
+        return message
+    
     def byte_pair_encode(self, shard):
-        print("Received 'em words")
+        """
+        Return list of token ID's for all tokens in the shard using byte pair encoding
+        """
         bp_enc = tiktoken.encoding_for_model("gpt-4o")
+
         token_ids = []
         for token in shard:
             token_ids += bp_enc.encode(token)
-        print(f"Token IDs: {token_ids}")
+
         return token_ids
 
-    def sample_sliding_window_data(self, token_ids, window_size, stride):
-        dataset = Dataset.from_tensor_slices(token_ids)
-        windows = dataset.window(window_size, shift=stride, drop_remainder=False)
-        windows = windows.flat_map(lambda window: window.batch(window_size))
-        samples = [ sample.tolist() for sample in list(windows.as_numpy_iterator()) ]
-        print(f"Sliding window samples: {samples}")
+    def sample_sliding_window_data(self, token_ids):
+        """
+        Return sliding window data samples given window size and stride.
+        """
+        windows = (
+            Dataset.from_tensor_slices(token_ids)
+            .window(WINDOW_SIZE, shift=STRIDE, drop_remainder=False)
+            .flat_map(lambda window: window.batch(WINDOW_SIZE))
+        )
+
+        # Convert any np arrays to lists
+        samples = list(map(lambda sample: sample.tolist(), list(windows.as_numpy_iterator())))
+
+        #print(f"Sliding window samples: {samples}")
         return samples
     
     def embed(self, token_ids, sliding_window_samples):
+        """
+        Return embeddings only for tokens in the shard.
+        """
         # Define the BPE tokenizer to use its properties
         tokenizer = tiktoken.encoding_for_model("gpt-4o")
 
         # Pad sequences to the same length
-        maxlen = max([ len(sample) for sample in sliding_window_samples ])
-        padded_seq = pad_sequences(sliding_window_samples, maxlen=maxlen, padding="post")
+        padded_seq = pad_sequences(
+            sliding_window_samples,
+            maxlen=max(list(map(len, sliding_window_samples))),
+            padding="post"
+        )
 
-        # Create an embedding layer
-        embedding_dim = 4 # dimension of the embedding vector
-
-        # Define the model
+        # Define the model with an embedding layer
         model = Sequential([
-            Embedding(input_dim=tokenizer.n_vocab, output_dim=embedding_dim),
+            Embedding(input_dim=tokenizer.n_vocab, output_dim=EMBEDDING_DIM),
             GlobalAveragePooling1D(),
-            Dense(1, activation="sigmoid") # Example output layer
+            Dense(1, activation="sigmoid") # Output layer
         ])
 
         # Compile the model
@@ -63,47 +86,59 @@ class Worker_i(TokenProcessor__POA.Worker):
         
         # Print the model summary
         model.summary()
-        print(padded_seq.shape)
 
         # Fit the model (random labels)
-        random_labels = [ random.randint(0,1) for _ in sliding_window_samples ]
-        labels_tensor = convert_to_tensor(random_labels, dtype=float32)
+        random_labels_tensor = convert_to_tensor(
+            list(map(lambda sample: random.randint(0,1), sliding_window_samples)),
+            dtype=float32
+        )
         padded_tensor = convert_to_tensor(padded_seq, dtype=float32)
-        model.fit(padded_tensor, labels_tensor, epochs=10)
+        model.fit(padded_tensor, random_labels_tensor, epochs=10)
 
         # Extract and return the embeddings
-        all_embeddings = [ [ float(value) for value in embedding ] for embedding in model.layers[0].get_weights()[0] ]
-        token_embeddings = []
-        uniq_token_ids = []
-        for token_id in token_ids:
-            if token_id not in uniq_token_ids:
-                uniq_token_ids.append(token_id)
-                token_embeddings.append(all_embeddings[token_id])
+        all_embeddings = list(
+            map(
+                lambda embedding: list(map(float, embedding)),
+                model.layers[0].get_weights()[0]
+            )
+        )
+        token_embeddings = list(
+            map(lambda token_id: all_embeddings[token_id], list(dict.fromkeys(token_ids)))
+        )
         return token_embeddings
 
 
 def main():
-    # public_ip = sys.argv[1]
-    master_ior = sys.argv[1]
+    configure()
 
-    orb = CORBA.ORB_init(sys.argv, CORBA.ORB_ID)
+    orb = CORBA.ORB_init(["-ORBendPointPublish", f"giop:tcp:{PUBLIC_IP}:0"], CORBA.ORB_ID)
     poa = orb.resolve_initial_references("RootPOA")
+    poa._get_the_POAManager().activate()
 
     worker_ior = orb.object_to_string(Worker_i()._this())
+    print(f"{WORKER_ID}->{worker_ior}")
 
-    master_obj = orb.string_to_object(master_ior)._narrow(TokenProcessor.Master)
-    if master_obj is None:
-        print("Object reference is not of type Master")
-        sys.exit(1)
-
-    # Send IOR to master (genius)
     try:
-        master_obj.get_worker_ior(worker_ior)
-
-        poa._get_the_POAManager().activate()
         orb.run()
     except KeyboardInterrupt:
-        print("Exited gracefully 0:-)")
+        print("Exiting gracefully... O:)")
+
+
+def configure():
+    """
+    Set global parameters from an INI file
+    """
+    # Read INI config file
+    config = configparser.ConfigParser()
+    config.read("config.ini")
+
+    # Initialize global constants
+    global WINDOW_SIZE, STRIDE, EMBEDDING_DIM, WORKER_ID, PUBLIC_IP
+    WINDOW_SIZE = config["global"].getint("window_size") # Size of the sliding window
+    STRIDE = config["global"].getint("stride") # Stride by which sliding window shifts
+    EMBEDDING_DIM = config["global"].getint("embedding_dim") # Dimension of embedding vector
+    WORKER_ID = config["worker"].getint("id") # Unique identification for the worker
+    PUBLIC_IP = config["worker"].get("public_ip") # Public IP address of this worker
 
 
 if __name__ == "__main__":

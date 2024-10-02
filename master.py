@@ -13,11 +13,14 @@ import boto3
 import nltk
 import csv
 import string
+import configparser
+
+import subprocess
+from multiprocessing import Process, Queue
 
 from omniORB import CORBA, PortableServer
 import TokenProcessor, TokenProcessor__POA
 
-workers = []
 
 class Master_i(TokenProcessor__POA.Master):
     def process_text(self, text):
@@ -28,12 +31,18 @@ class Master_i(TokenProcessor__POA.Master):
         shard = tokens
         print(shard)
         # for shard in shards:
-        worker_obj = orb.string_to_object(workers[0])._narrow(TokenProcessor.Worker)
+        worker_ior = WORKERS[0]
+        print(f"\nRegistered worker {worker_ior}")
+        worker_obj = orb.string_to_object(worker_ior)._narrow(TokenProcessor.Worker)
         if worker_obj is None:
             print("Object reference is not of type worker")
             sys.exit(1)
         else:
             print("Connected to worker")
+            sent = "Hello, Worker #1!"
+            print(f"Sent: {sent}")
+            recv = worker_obj.echo_test(sent)
+            print(f"Received: {recv}")
         
         token_ids = worker_obj.byte_pair_encode(shard)
 
@@ -47,18 +56,17 @@ class Master_i(TokenProcessor__POA.Master):
 
         print(f"{token_ids}")
 
-        sliding_window_data_samples = worker_obj.sample_sliding_window_data(token_ids, 100, 10)
+        sliding_window_data_samples = worker_obj.sample_sliding_window_data(token_ids)
         print(sliding_window_data_samples)
 
         embeddings = worker_obj.embed(token_ids, sliding_window_data_samples)
         print(embeddings)
         embeddings_dict = dict(zip(freqmap.keys(), embeddings))
 
-        embedding_dim = 4
         with open("stats.csv", "w") as out_file:
             csv_writer = csv.writer(out_file)
 
-            headers = ["Token", "ID", "Frequency"] + [ f"embVal{i}" for i in range(embedding_dim) ]
+            headers = ["Token", "ID", "Frequency"] + [ f"embVal{i:03}" for i in range(EMBEDDING_DIM) ]
             csv_writer.writerow(headers)
 
             for token in idmap:
@@ -68,23 +76,21 @@ class Master_i(TokenProcessor__POA.Master):
         return text
 
     def get_worker_ior(self, worker_ior):
-        print(f"\nRegistered worker {worker_ior}")
+
         workers.append(worker_ior) # register worker
         return worker_ior
 
 
 def main():
-    global orb, master_ior1#, master_ior2
+    configure()
+    global orb, master_ior
+    
     orb = CORBA.ORB_init(sys.argv, CORBA.ORB_ID)
     poa = orb.resolve_initial_references("RootPOA")
-
-    master_ior1 = orb.object_to_string(Master_i()._this())
-    print(f"For worker:-\n{master_ior1}")
-
-    # master_ior2 = orb.object_to_string(Master()._this())
-    # print(f"For client:-\n{master_ior2}")
-
     poa._get_the_POAManager().activate()
+
+    master_ior = orb.object_to_string(Master_i()._this())
+    print(f"{master_ior}")
 
     try:
         orb.run()
@@ -93,7 +99,6 @@ def main():
 
 
 def split_tokens(tokens):
-    n_nodes = 10
     shard_size = len(tokens) // n_nodes
     shards = [ tokens[i : i + shard_size] for i in range(0, len(tokens), shard_size) ]
     
@@ -110,6 +115,24 @@ def tokenize_text(text, language="english"):
     for sentence in sentences:
         tokens += tokenizer.tokenize(sentence)
     return tokens
+
+
+def configure():
+    """
+    Set global parameters from an INI file
+    """
+    # Read INI config file
+    config = configparser.ConfigParser()
+    config.read("config.ini")
+
+    # Initialize global constants
+    global WINDOW_SIZE, STRIDE, EMBEDDING_DIM, SHARD_SIZE, WORKER_AMI, WORKERS
+    WINDOW_SIZE = config["global"].getint("window_size") # Size of the sliding window
+    STRIDE = config["global"].getint("stride") # Stride by which sliding window shifts
+    EMBEDDING_DIM = config["global"].getint("embedding_dim") # Dimension of embedding vector
+    SHARD_SIZE = config["master"].getint("shard_size") # Size of each shard in terms of num tokens
+    WORKER_AMI = config["master"].get("worker_ami")
+    WORKERS[0] = config["master"].get("worker0")
 
 
 if __name__ == "__main__":
