@@ -1,6 +1,7 @@
 #
 # worker.py
 #
+# Source for remote worker object in the master-worker model.
 # Provide functionality to process a shard of tokens.
 #
 # Homework 1
@@ -9,40 +10,52 @@
 #
 import sys
 import tiktoken
-import tensorflow as tf
 import random
 
+from tensorflow import convert_to_tensor, float32
+from tensorflow.data import Dataset
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras import Sequential
+from tensorflow.keras.layers import Embedding, GlobalAveragePooling1D, Dense
+
 from omniORB import CORBA, PortableServer
-import ShardWorkerModule, ShardWorkerModule__POA
+import TokenProcessor, TokenProcessor__POA
 
 
-class TokenProcessor(ShardWorkerModule__POA.ShardWorker):
-    def byte_pair_encode(shard):
+class Worker_i(TokenProcessor__POA.Worker):
+    def byte_pair_encode(self, shard):
+        print("Received 'em words")
         bp_enc = tiktoken.encoding_for_model("gpt-4o")
-        return [ bp_enc.encode(token) for token in shard ]
+        token_ids = []
+        for token in shard:
+            token_ids += bp_enc.encode(token)
+        print(f"Token IDs: {token_ids}")
+        return token_ids
 
-    def sample_sliding_window_data(token_ids, window_size, stride):
-        dataset = tf.data.Dataset.from_tensor_slices(token_ids)
+    def sample_sliding_window_data(self, token_ids, window_size, stride):
+        dataset = Dataset.from_tensor_slices(token_ids)
         windows = dataset.window(window_size, shift=stride, drop_remainder=False)
         windows = windows.flat_map(lambda window: window.batch(window_size))
-        return list(windows.as_numpy_iterator())
+        samples = [ sample.tolist() for sample in list(windows.as_numpy_iterator()) ]
+        print(f"Sliding window samples: {samples}")
+        return samples
     
-    def embed(token_ids):
+    def embed(self, token_ids, sliding_window_samples):
         # Define the BPE tokenizer to use its properties
         tokenizer = tiktoken.encoding_for_model("gpt-4o")
 
         # Pad sequences to the same length
-        maxlen = max([ len(token_id) for token_id in token_ids ])
-        padded_seq = tf.keras.preprocessing.sequence.pad_sequences(token_ids, maxlen=maxlen, padding="post")
+        maxlen = max([ len(sample) for sample in sliding_window_samples ])
+        padded_seq = pad_sequences(sliding_window_samples, maxlen=maxlen, padding="post")
 
         # Create an embedding layer
-        embedding_dim = 8 # dimension of the embedding vector
+        embedding_dim = 4 # dimension of the embedding vector
 
         # Define the model
-        model - tf.keras.Sequential([
-            tf.keras.layers.Embedding(input_dim=tokenizer.n_vocab, output_dim=embedding_dim, input_length=maxlen),
-            tf.keras.layers.GlobalAveragePooling1D(),
-            tf.keras.layers.Dense(1, activation="sigmoid") # Example output layer
+        model = Sequential([
+            Embedding(input_dim=tokenizer.n_vocab, output_dim=embedding_dim),
+            GlobalAveragePooling1D(),
+            Dense(1, activation="sigmoid") # Example output layer
         ])
 
         # Compile the model
@@ -50,26 +63,35 @@ class TokenProcessor(ShardWorkerModule__POA.ShardWorker):
         
         # Print the model summary
         model.summary()
+        print(padded_seq.shape)
 
         # Fit the model (random labels)
-        random_labels = [ random.randint(0,1) for _ in token_ids ]
-        model.fit(padded_seq, random_labels, epochs=10)
+        random_labels = [ random.randint(0,1) for _ in sliding_window_samples ]
+        labels_tensor = convert_to_tensor(random_labels, dtype=float32)
+        padded_tensor = convert_to_tensor(padded_seq, dtype=float32)
+        model.fit(padded_tensor, labels_tensor, epochs=10)
 
         # Extract and return the embeddings
-        embeddings = model.layers[0].get_weights()[0]
-        return embeddings
+        all_embeddings = [ [ float(value) for value in embedding ] for embedding in model.layers[0].get_weights()[0] ]
+        token_embeddings = []
+        uniq_token_ids = []
+        for token_id in token_ids:
+            if token_id not in uniq_token_ids:
+                uniq_token_ids.append(token_id)
+                token_embeddings.append(all_embeddings[token_id])
+        return token_embeddings
 
 
 def main():
-    public_ip = sys.argv[1]
-    master_ior = sys.argv[2]
+    # public_ip = sys.argv[1]
+    master_ior = sys.argv[1]
 
-    orb = CORBA.ORB_init(["-ORBendPointPublish", "giop:tcp:" + public_ip + ":0"], CORBA.ORB_ID)
+    orb = CORBA.ORB_init(sys.argv, CORBA.ORB_ID)
     poa = orb.resolve_initial_references("RootPOA")
 
-    worker_ior = orb.object_to_string(ShardWorker()._this())
+    worker_ior = orb.object_to_string(Worker_i()._this())
 
-    master_obj = orb.string_to_object(master_ior)._narrow(TokenProcessorModule.TokenProcessor)
+    master_obj = orb.string_to_object(master_ior)._narrow(TokenProcessor.Master)
     if master_obj is None:
         print("Object reference is not of type Master")
         sys.exit(1)
@@ -77,6 +99,8 @@ def main():
     # Send IOR to master (genius)
     try:
         master_obj.get_worker_ior(worker_ior)
+
+        poa._get_the_POAManager().activate()
         orb.run()
     except KeyboardInterrupt:
         print("Exited gracefully 0:-)")
