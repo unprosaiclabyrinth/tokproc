@@ -13,7 +13,7 @@ module TokenProcessor {
     };
 
     interface Master {
-        string process_text(in string text);
+        string process_text(in string opt, in string text);
     };
 };
         

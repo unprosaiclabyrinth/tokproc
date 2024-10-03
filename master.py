@@ -33,6 +33,7 @@ class Config:
     S3_IOR_BUCKET = ""
 
     SHARD_SIZE = 0
+    MASTER_IOR_FILE = ""
     OUT_FILE = ""
 
     WORKER_AMI = ""
@@ -64,6 +65,7 @@ class Config:
         cls.S3_IOR_BUCKET = config["global"].get("s3_ior_bucket")
 
         cls.SHARD_SIZE = config["master"].getint("shard_size") # Size of each shard in terms of num tokens
+        cls.MASTER_IOR_FILE = config["master"].get("master_ior_file")
         cls.OUT_FILE = config["master"].get("out_file") # Output filename
 
         cls.WORKER_AMI = config["instance"].get("aws_worker_ami")
@@ -83,7 +85,17 @@ worker_registry = {}
 
 
 class Master_i(TokenProcessor__POA.Master):
-    def process_text(self, text):
+    def process_text(self, opt, arg):
+        match opt:
+            case "f":
+                try:
+                    with open(arg, "r") as in_file:
+                        text = in_file.read().encode("ascii", errors="ignore").decode()
+                except Exception as e:
+                    print(f"*** Couldn't read file \"{arg}\": {e}")
+            case "s":
+                text = arg
+        
         shards = shard_tokens(tokenize_text(text)) # shard_ID -> shard
         print(f"{shards}, {len(shards)}")
 
@@ -107,8 +119,9 @@ def main():
     poa = orb.resolve_initial_references("RootPOA")
     poa._get_the_POAManager().activate()
 
-    # Print the master's IOR
-    print(orb.object_to_string(Master_i()._this()))
+    # Write the master's IOR to a file for the client to read
+    write_master_ior(orb.object_to_string(Master_i()._this()))
+    print(f"Wrote the IOR to {Config.MASTER_IOR_FILE}.")
 
     try:
         orb.run()
@@ -135,7 +148,7 @@ def shard_tokens(tokens):
     and each key is a unique shard ID.
     """
     return dict(map(
-        lambda i: (i, tokens[i : i + Config.SHARD_SIZE]),
+        lambda i: (i // Config.SHARD_SIZE, tokens[i : i + Config.SHARD_SIZE]),
         range(0, len(tokens), Config.SHARD_SIZE)
     ))
 
@@ -353,6 +366,14 @@ def write_csv(idmap, freqmap, embeddings_map):
         for token in idmap:
             row = [token, idmap[token], freqmap[idmap[token]]] + [ val for val in embeddings_map[idmap[token]] ]
             csv_writer.writerow(row)
+
+
+def write_master_ior(master_ior):
+    """
+    Write master's IOR to a local file to cimplify IOR I/O for client.
+    """
+    with open(Config.MASTER_IOR_FILE, "w") as loc_ior:
+        loc_ior.write(master_ior)
 
 
 if __name__ == "__main__":
