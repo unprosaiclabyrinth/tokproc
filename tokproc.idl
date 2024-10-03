@@ -6,14 +6,14 @@ module TokenProcessor {
     typedef sequence<string> str_seq;
 
     interface Worker {
+        string echo_test(in string message);
         long_seq byte_pair_encode(in str_seq shard);
-        long_seq2D sample_sliding_window_data(in long_seq token_ids, in long window_size, in long stride);
+        long_seq2D sample_sliding_window_data(in long_seq token_ids);
         float_seq2D embed(in long_seq token_ids, in long_seq2D sliding_window_samples);
     };
 
     interface Master {
         string process_text(in string text);
-        string get_worker_ior(in string worker_ior);
     };
 };
         
