@@ -23,6 +23,7 @@ from tensorflow.keras.layers import Embedding, GlobalAveragePooling1D, Dense
 from omniORB import CORBA, PortableServer
 import TokenProcessor, TokenProcessor__POA
 
+CONFIG_FILE = "config.ini"
 
 class Worker_i(TokenProcessor__POA.Worker):
     def echo_test(self, message):
@@ -111,17 +112,46 @@ class Worker_i(TokenProcessor__POA.Worker):
 def main():
     configure()
 
-    orb = CORBA.ORB_init(["-ORBendPointPublish", f"giop:tcp:{PUBLIC_IP}:0"], CORBA.ORB_ID)
+    worker_id = int(sys.argv[1])
+    public_ip = sys.argv[2]
+
+    orb = CORBA.ORB_init(["-ORBendPointPublish", f"giop:tcp:{public_ip}:0"], CORBA.ORB_ID)
     poa = orb.resolve_initial_references("RootPOA")
     poa._get_the_POAManager().activate()
 
     worker_ior = orb.object_to_string(Worker_i()._this())
-    print(f"{WORKER_ID}->{worker_ior}")
+    
+    # Write worker IOR to persistent S3 storage
+    # to communicate it to master (master reads)
+    write_worker_ior(worker_id, worker_ior)
 
     try:
         orb.run()
     except KeyboardInterrupt:
         print("Exiting gracefully... O:)")
+
+
+def write_worker_ior(id, ior):
+    """
+    Write the worker IOR to S3 for the master to read it. If worker_id is N
+    then the IOR for this worker is in ior00N.txt/ior0N.txt/iorN.txt
+    """
+    # Write IOR locally
+    with open(LOCAL_IOR_FILE, "w") as loc_ior:
+        loc_ior.write(ior)
+    
+    # Create an S3 client
+    s3 = boto3.client("s3")
+
+    # Set the bucket name and file details
+    local_key = LOCAL_IOR_FILE # Path to local file
+    s3_key = f"ior{id:03}.txt" # Path to S3 file
+
+    try:
+        s3.upload_file(local_key, S3_IOR_BUCKET, s3_key)
+        print(f"File uploaded successfully to {S3_IOR_BUCKET}/{s3_key}")
+    except Exception as e:
+        print(f"Error uploading file to S3: {e}")
 
 
 def configure():
@@ -130,15 +160,17 @@ def configure():
     """
     # Read INI config file
     config = configparser.ConfigParser()
-    config.read("config.ini")
+    config.read(CONFIG_FILE)
 
     # Initialize global constants
-    global WINDOW_SIZE, STRIDE, EMBEDDING_DIM, WORKER_ID, PUBLIC_IP
+    global WINDOW_SIZE, STRIDE, EMBEDDING_DIM, S3_IOR_BUCKET
     WINDOW_SIZE = config["global"].getint("window_size") # Size of the sliding window
     STRIDE = config["global"].getint("stride") # Stride by which sliding window shifts
     EMBEDDING_DIM = config["global"].getint("embedding_dim") # Dimension of embedding vector
-    WORKER_ID = config["worker"].getint("id") # Unique identification for the worker
-    PUBLIC_IP = config["worker"].get("public_ip") # Public IP address of this worker
+    S3_IOR_BUCKET = config["global"].get("s3_ior_bucket")
+
+    global LOCAL_IOR_FILE
+    LOCAL_IOR_FILE = config["worker"].get("local_ior_file")
 
 
 if __name__ == "__main__":
