@@ -17,10 +17,11 @@ import paramiko # SSH
 import string
 import sys
 
-from functools import reduce
-from multiprocessing import Pool, Process, Value, Manager, cpu_count
-from threading import Thread, Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import reduce
+from multiprocessing import Pool, Process, Value, Event, cpu_count
+from threading import Lock
+from time import sleep
 
 from omniORB import CORBA, PortableServer
 import TokenProcessor, TokenProcessor__POA
@@ -38,6 +39,7 @@ class Config:
     SHARD_SIZE = 0
     MASTER_IOR_FILE = ""
     OUT_FILE = ""
+    LOG_FILE = ""
     WORKER_LIMIT = 0
 
     WORKER_AMI = ""
@@ -71,6 +73,7 @@ class Config:
         cls.SHARD_SIZE = config["master"].getint("shard_size") # Size of each shard in terms of num tokens
         cls.MASTER_IOR_FILE = config["master"].get("master_ior_file")
         cls.OUT_FILE = config["master"].get("out_file") # Output filename
+        cls.LOG_FILE = config["master"].get("log_file")
         cls.WORKER_LIMIT = config["master"].getint("worker_limit")
 
         cls.WORKER_AMI = config["instance"].get("aws_worker_ami")
@@ -114,12 +117,14 @@ class Master_i(TokenProcessor__POA.Master):
     def process_text(self, opt, arg):
         match opt:
             case "f":
+                print(f'REQUEST> Process file: "{arg}"')
                 try:
                     with open(arg, "r") as in_file:
                         text = in_file.read().encode("ascii", errors="ignore").decode()
                 except Exception as e:
                     print(f"*** Couldn't read file \"{arg}\": {e}")
             case "s":
+                print("REQUEST> Process string")
                 text = arg
         
         shards = shard_tokens(tokenize_text(text)) # shard_ID -> shard
@@ -138,10 +143,12 @@ class Master_i(TokenProcessor__POA.Master):
             # Collect the results as the futures complete
             results = [future.result() for future in as_completed(futures)]
 
+        print("Gathering data...")
         for shard_id, idmap, freqmap, embeddings_map in results:
             shard_data[shard_id] = {"IDs": idmap, "Frequencies": freqmap, "Embeddings": embeddings_map}
             
         write_csv(*clean_data(shard_data))
+        print(f'RESPONSE> Wrote stats to "{Config.OUT_FILE}". Thanks!\n')
         
         return text
 
@@ -213,7 +220,6 @@ def spawn_worker(worker_id):
     # Run worker in a separate thread since it blocks for output.
     # No need to call join on the process; it terminates when instance is terminated.
     Process(target=run_worker, args=(worker_id, instance_id)).start()
-    #Thread(target=run_worker, args=(worker_id, instance_id)).start()
 
     # Read the worker IOR from S3 (genius communication)
     worker_ior = None
@@ -271,7 +277,7 @@ def launch_instance(worker_id):
     with worker_count_lock:
         worker_count += 1
 
-    print(f"Launched instance: {instance.id}")
+    print(f"=={worker_id:03}== Launched instance: {instance.id}")
     return instance.id
 
 
@@ -341,7 +347,7 @@ def register_worker(worker_id, instance_id, worker_ior):
 
     with registry_lock:
         worker_registry[worker_id] = {"iID": instance_id, "IOR": worker_ior}
-    print(f"Registered worker #{worker_id:03} on {instance_id}.")
+    print(f"=={worker_id:03}== Registered worker.")
 
 
 def kill_worker(worker_id):
@@ -351,7 +357,7 @@ def kill_worker(worker_id):
     global worker_count_lock, worker_count
 
     boto3.client("ec2").terminate_instances(InstanceIds=[worker_registry[worker_id]["iID"]])
-    print(f"Terminated instance: {worker_registry.pop(worker_id)["iID"]}")
+    print(f"=={worker_id:03}== Terminated instance: {worker_registry.pop(worker_id)["iID"]}")
 
     with worker_count_lock:
         worker_count -= 1
@@ -404,8 +410,6 @@ def write_csv(idmap, freqmap, embeddings_map):
         for token in idmap:
             row = [token, idmap[token], freqmap[idmap[token]]] + [ val for val in embeddings_map[idmap[token]] ]
             csv_writer.writerow(row)
-    
-    print(f'Wrote stats to "{Config.OUT_FILE}". Thanks!')
 
 
 def write_master_ior(master_ior):
@@ -414,13 +418,12 @@ def write_master_ior(master_ior):
     """
     with open(Config.MASTER_IOR_FILE, "w") as loc_ior:
         loc_ior.write(master_ior)
-    
-    print(f'Wrote the IOR to "{Config.MASTER_IOR_FILE}".')
 
 
 def main():
     Config.configure()
     Config.upload_config()
+    logging.basicConfig(filename=Config.LOG_FILE, level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
     global orb
 
     poa = orb.resolve_initial_references("RootPOA")
@@ -428,6 +431,7 @@ def main():
 
     # Write the master's IOR to a file for the client to read
     write_master_ior(orb.object_to_string(Master_i()._this()))
+    print(f'Wrote the IOR to "{Config.MASTER_IOR_FILE}".\n')
 
     try:
         orb.run()
