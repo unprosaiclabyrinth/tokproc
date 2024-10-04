@@ -11,13 +11,16 @@
 import boto3 # AWS SDK
 import configparser # INI config I/O
 import csv # CSV I/O
+import logging # logging module
 import nltk # Text tokenizer
 import paramiko # SSH
 import string
 import sys
 
 from functools import reduce
-from multiprocessing import Process, Queue
+from multiprocessing import Pool, Process, Value, Manager, cpu_count
+from threading import Thread, Lock
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from omniORB import CORBA, PortableServer
 import TokenProcessor, TokenProcessor__POA
@@ -30,11 +33,12 @@ class Config:
     WINDOW_SIZE = 0
     STRIDE = 0
     EMBEDDING_DIM = 0
-    S3_IOR_BUCKET = ""
+    S3_BUCKET = ""
 
     SHARD_SIZE = 0
     MASTER_IOR_FILE = ""
     OUT_FILE = ""
+    WORKER_LIMIT = 0
 
     WORKER_AMI = ""
     INSTANCE_TYPE = ""
@@ -62,11 +66,12 @@ class Config:
         cls.WINDOW_SIZE = config["global"].getint("window_size") # Size of the sliding window
         cls.STRIDE = config["global"].getint("stride") # Stride by which sliding window shifts
         cls.EMBEDDING_DIM = config["global"].getint("embedding_dim") # Dimension of embedding vector
-        cls.S3_IOR_BUCKET = config["global"].get("s3_ior_bucket")
+        cls.S3_BUCKET = config["global"].get("aws_s3_bucket")
 
         cls.SHARD_SIZE = config["master"].getint("shard_size") # Size of each shard in terms of num tokens
         cls.MASTER_IOR_FILE = config["master"].get("master_ior_file")
         cls.OUT_FILE = config["master"].get("out_file") # Output filename
+        cls.WORKER_LIMIT = config["master"].getint("worker_limit")
 
         cls.WORKER_AMI = config["instance"].get("aws_worker_ami")
         cls.INSTANCE_TYPE = config["instance"].get("instance_type")
@@ -79,9 +84,30 @@ class Config:
         cls.SSH_KEY_PATH = config["instance"].get("ssh_pem_key_path")
         cls.SSH_USER = config["instance"].get("ssh_username")
         cls.SSH_PORT = config["instance"].getint("ssh_port")
+    
+    @classmethod
+    def upload_config(cls):
+        """
+        Upload configuration file to S3 for workers to download and read.
+        """
+        # Create an S3 client
+        s3 = boto3.client("s3")
+
+        try:
+            s3.upload_file(cls.CONFIG_FILE, cls.S3_BUCKET, cls.CONFIG_FILE)
+            print("Uploaded config to S3.")
+        except Exception as e: # Includes case of file not found
+            print(e)
+            sys.exit(1)
 
 
 worker_registry = {}
+worker_count = 0
+
+registry_lock = Lock()
+worker_count_lock = Lock()
+
+orb = CORBA.ORB_init(sys.argv, CORBA.ORB_ID)
 
 
 class Master_i(TokenProcessor__POA.Master):
@@ -97,36 +123,27 @@ class Master_i(TokenProcessor__POA.Master):
                 text = arg
         
         shards = shard_tokens(tokenize_text(text)) # shard_ID -> shard
-        print(f"{shards}, {len(shards)}")
+        if len(shards) == 1:
+            print(f"Distributing {len(shards)} shard across {len(shards)} nodes...")
+        else:
+            print(f"Distributing {len(shards)} shards across {len(shards)} nodes...")
 
         shard_data = {}
 
-        for shard_id, shard in shards.items():
-            idmap, freqmap, embeddings_map = process_shard(shard_id, shard)
+        # I/O bound => thread pool
+        with ThreadPoolExecutor(max_workers=cpu_count()) as executor:
+            # Submit tasks to the thread pool
+            futures = [executor.submit(process_shard, shard_id, shard) for shard_id, shard in shards.items()]
+
+            # Collect the results as the futures complete
+            results = [future.result() for future in as_completed(futures)]
+
+        for shard_id, idmap, freqmap, embeddings_map in results:
             shard_data[shard_id] = {"IDs": idmap, "Frequencies": freqmap, "Embeddings": embeddings_map}
             
         write_csv(*clean_data(shard_data))
         
         return text
-
-
-def main():
-    Config.configure()
-
-    global orb
-    orb = CORBA.ORB_init(sys.argv, CORBA.ORB_ID)
-
-    poa = orb.resolve_initial_references("RootPOA")
-    poa._get_the_POAManager().activate()
-
-    # Write the master's IOR to a file for the client to read
-    write_master_ior(orb.object_to_string(Master_i()._this()))
-    print(f"Wrote the IOR to {Config.MASTER_IOR_FILE}.")
-
-    try:
-        orb.run()
-    except KeyboardInterrupt:
-        print("Exited gracefully O:)")
 
 
 def tokenize_text(text, language="english"):
@@ -158,6 +175,8 @@ def process_shard(shard_id, shard):
     Calculate (BPE) token IDs, sliding window data samples, and embeddings.
     Return three dictionaries: token->token_id, token_id->frequency, token_id->embedding.
     """
+    Config.configure()
+
     # Spawn a worker to process the shard
     worker_obj = spawn_worker(worker_id=shard_id)
 
@@ -177,7 +196,7 @@ def process_shard(shard_id, shard):
 
     # Kill the worker and return data
     kill_worker(worker_id=shard_id)
-    return idmap, freqmap, embeddings_map
+    return shard_id, idmap, freqmap, embeddings_map
 
 
 def spawn_worker(worker_id):
@@ -185,14 +204,16 @@ def spawn_worker(worker_id):
     Dynamically launch a remote EC2 instance and run a worker on it.
     Return a reference to the worker object.
     """
+    global orb
+
     # Launch an EC2 instance
     instance_id = launch_instance(worker_id)
-    # instance_id = "i-0159bae03b8a0b3f4"
 
     # Run the worker on the launched instance and pass it worker_id.
-    # Run worker in a separate process since it blocks for output.
+    # Run worker in a separate thread since it blocks for output.
     # No need to call join on the process; it terminates when instance is terminated.
     Process(target=run_worker, args=(worker_id, instance_id)).start()
+    #Thread(target=run_worker, args=(worker_id, instance_id)).start()
 
     # Read the worker IOR from S3 (genius communication)
     worker_ior = None
@@ -206,11 +227,6 @@ def spawn_worker(worker_id):
     if worker_obj is None:
         print("Object reference is not of type worker")
         sys.exit(1)
-    else:
-        # Test master->worker communication
-        message = f"Hello, Worker #{worker_id}!"
-        print(f"\nSent: {message}")
-        print(f"Received: {worker_obj.echo_test(message)}\n")
     
     return worker_obj
 
@@ -219,7 +235,12 @@ def launch_instance(worker_id):
     """
     Launch an EC2 instance and return the instance ID.
     """
+    global worker_count_lock, worker_count
+
     ec2 = boto3.resource("ec2")
+
+    while worker_count >= Config.WORKER_LIMIT:
+        pass # Busy wait
 
     instance = ec2.create_instances(
         ImageId = Config.WORKER_AMI,
@@ -247,18 +268,20 @@ def launch_instance(worker_id):
     instance.wait_until_running()
     instance.reload()
 
+    with worker_count_lock:
+        worker_count += 1
+
     print(f"Launched instance: {instance.id}")
     return instance.id
 
 
-# Called as a target of a child
 def run_worker(worker_id, instance_id):
     """
     SSH into the instance specified by the given instance_id and run the worker.
     Reading instance_id from the worker registry does not work because worker
     is not registered yet.
     """
-    Config.configure() # re-configure in child
+    Config.configure()
 
     ec2 = boto3.resource("ec2")
     instance = ec2.Instance(instance_id)
@@ -271,13 +294,20 @@ def run_worker(worker_id, instance_id):
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
     # Connect to the remote host
-    ssh.connect(hostname, port=Config.SSH_PORT, username=Config.SSH_USER, key_filename=Config.SSH_KEY_PATH)
+    connected = False
+    while not connected:
+        try:
+            ssh.connect(hostname, port=Config.SSH_PORT, username=Config.SSH_USER, key_filename=Config.SSH_KEY_PATH)
+            connected = True
 
-    # Run the command to start the worker
-    command = f"python3 worker.py {worker_id} $IPV4"
-    stdin, stdout, stderr = ssh.exec_command(command) # Blocking
+            # Run the command to start the worker
+            command = f"python3 worker.py {worker_id} $IPV4"
+            stdin, stdout, stderr = ssh.exec_command(command)
 
-    capture = stdout.read().decode('utf-8')
+            capture = stdout.read().decode('utf-8') # Blocking
+        except paramiko.ssh_exception.NoValidConnectionsError:
+            # Retry connection in case of connection error
+            pass
 
     # Close the connection
     ssh.close()
@@ -293,10 +323,10 @@ def read_worker_ior(worker_id):
     s3_key = f"ior{worker_id:03}.txt" # File path in S3
 
     try:
-        worker_ior = s3.get_object(Bucket=Config.S3_IOR_BUCKET, Key=s3_key)['Body'].read().decode('utf-8')
+        worker_ior = s3.get_object(Bucket=Config.S3_BUCKET, Key=s3_key)['Body'].read().decode('utf-8')
 
         # Delete file after reading from it to ensure correct value the next time
-        s3.delete_object(Bucket=Config.S3_IOR_BUCKET, Key=s3_key) 
+        s3.delete_object(Bucket=Config.S3_BUCKET, Key=s3_key) 
 
         return worker_ior
     except Exception as e: # Includes case of file not found
@@ -307,7 +337,10 @@ def register_worker(worker_id, instance_id, worker_ior):
     """
     Add given worker data to the global worker registry.
     """
-    worker_registry[worker_id] = {"iID": instance_id, "IOR": worker_ior}
+    global registry_lock, worker_registry
+
+    with registry_lock:
+        worker_registry[worker_id] = {"iID": instance_id, "IOR": worker_ior}
     print(f"Registered worker #{worker_id:03} on {instance_id}.")
 
 
@@ -315,8 +348,13 @@ def kill_worker(worker_id):
     """
     Terminate the instance on which the worker specified by given worker_ID is running.
     """
+    global worker_count_lock, worker_count
+
     boto3.client("ec2").terminate_instances(InstanceIds=[worker_registry[worker_id]["iID"]])
     print(f"Terminated instance: {worker_registry.pop(worker_id)["iID"]}")
+
+    with worker_count_lock:
+        worker_count -= 1
 
 
 def clean_data(shard_data):
@@ -366,6 +404,8 @@ def write_csv(idmap, freqmap, embeddings_map):
         for token in idmap:
             row = [token, idmap[token], freqmap[idmap[token]]] + [ val for val in embeddings_map[idmap[token]] ]
             csv_writer.writerow(row)
+    
+    print(f'Wrote stats to "{Config.OUT_FILE}". Thanks!')
 
 
 def write_master_ior(master_ior):
@@ -374,6 +414,25 @@ def write_master_ior(master_ior):
     """
     with open(Config.MASTER_IOR_FILE, "w") as loc_ior:
         loc_ior.write(master_ior)
+    
+    print(f'Wrote the IOR to "{Config.MASTER_IOR_FILE}".')
+
+
+def main():
+    Config.configure()
+    Config.upload_config()
+    global orb
+
+    poa = orb.resolve_initial_references("RootPOA")
+    poa._get_the_POAManager().activate()
+
+    # Write the master's IOR to a file for the client to read
+    write_master_ior(orb.object_to_string(Master_i()._this()))
+
+    try:
+        orb.run()
+    except KeyboardInterrupt:
+        print("Exited gracefully O:)")
 
 
 if __name__ == "__main__":

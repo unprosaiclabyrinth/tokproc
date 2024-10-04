@@ -23,7 +23,10 @@ from tensorflow.keras.layers import Embedding, GlobalAveragePooling1D, Dense
 from omniORB import CORBA, PortableServer
 import TokenProcessor, TokenProcessor__POA
 
+
 CONFIG_FILE = "config.ini"
+S3_BUCKET = "fa24cs441hw1"
+
 
 class Worker_i(TokenProcessor__POA.Worker):
     def echo_test(self, message):
@@ -110,6 +113,7 @@ class Worker_i(TokenProcessor__POA.Worker):
 
 
 def main():
+    download_config()
     configure()
 
     worker_id = int(sys.argv[1])
@@ -144,14 +148,27 @@ def write_worker_ior(id, ior):
     s3 = boto3.client("s3")
 
     # Set the bucket name and file details
-    local_key = LOCAL_IOR_FILE # Path to local file
     s3_key = f"ior{id:03}.txt" # Path to S3 file
 
     try:
-        s3.upload_file(local_key, S3_IOR_BUCKET, s3_key)
-        print(f"File uploaded successfully to {S3_IOR_BUCKET}/{s3_key}")
+        s3.upload_file(LOCAL_IOR_FILE, S3_BUCKET, s3_key)
+        print(f"File uploaded successfully to {S3_BUCKET}/{s3_key}")
     except Exception as e:
         print(f"Error uploading file to S3: {e}")
+
+
+def download_config():
+    """
+    Download configuration, written by master, from S3.
+    """ 
+    s3 = boto3.client("s3")
+
+    try:
+        s3.download_file(S3_BUCKET, CONFIG_FILE, CONFIG_FILE)
+        print("Downloaded config from S3.")
+    except Exception as e:
+        print(e)
+        sys.exit(1)
 
 
 def configure():
@@ -167,7 +184,6 @@ def configure():
     WINDOW_SIZE = config["global"].getint("window_size") # Size of the sliding window
     STRIDE = config["global"].getint("stride") # Stride by which sliding window shifts
     EMBEDDING_DIM = config["global"].getint("embedding_dim") # Dimension of embedding vector
-    S3_IOR_BUCKET = config["global"].get("s3_ior_bucket")
 
     global LOCAL_IOR_FILE
     LOCAL_IOR_FILE = config["worker"].get("local_ior_file")
