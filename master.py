@@ -129,7 +129,7 @@ class Master_i(TokenProcessor__POA.Master):
         
         shards = shard_tokens(tokenize_text(text)) # shard_ID -> shard
         if len(shards) == 1:
-            print(f"Distributing {len(shards)} shard across {len(shards)} nodes...")
+            print(f"Distributing {len(shards)} shard across {len(shards)} node...")
         else:
             print(f"Distributing {len(shards)} shards across {len(shards)} nodes...")
 
@@ -310,7 +310,8 @@ def run_worker(worker_id, instance_id):
             command = f"python3 worker.py {worker_id} $IPV4"
             stdin, stdout, stderr = ssh.exec_command(command)
 
-            capture = stdout.read().decode('utf-8') # Blocking
+            # Don't need worker output
+            throwaway_capture = stdout.read().decode('utf-8') # Blocking
         except paramiko.ssh_exception.NoValidConnectionsError:
             # Retry connection in case of connection error
             pass
