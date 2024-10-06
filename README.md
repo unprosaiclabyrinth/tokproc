@@ -68,7 +68,7 @@ python3 client.py -h
 
 # Testing
 
-This project has been tested on the dataset: plaintext version of the book *The Adventures of Sherlock Holmes* by **Sir Arthur Conan Doyle** downloaded from Project Gutenberg.
+This project has been tested on the dataset: plaintext version of the book *[The Adventures of Sherlock Holmes](https://en.wikipedia.org/wiki/The_Adventures_of_Sherlock_Holmes)* by **[Sir Arthur Conan Doyle](https://en.wikipedia.org/wiki/Arthur_Conan_Doyle)** downloaded from [Project Gutenberg](https://www.gutenberg.org/).
 
 ```sh
 hw1/ $ wc sherlock.txt
