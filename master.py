@@ -21,7 +21,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import reduce
 from multiprocessing import Pool, Process, Value, Event, cpu_count
 from threading import Lock
-from time import sleep
 
 from omniORB import CORBA, PortableServer
 import TokenProcessor, TokenProcessor__POA
