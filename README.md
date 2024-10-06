@@ -1,4 +1,4 @@
-Name:** Himanshu Dongre\
+**Name:** Himanshu Dongre\
 **Option:** Option 2 (CORBA + Python)\
 **Video link:**
 
@@ -12,8 +12,8 @@ This Git repo contains the Python implementation using CORBA of HW1 for CS441, F
 1. **client.py:** The client script. This sends a file or a string to the server to process.
 2. **master.py:** I have implemented the server as a [master-worker](http://charm.cs.uiuc.edu/research/masterSlave) model. The master receives the request from the client, splits the input into shards, and delegates each shard to an individual worker.
 3. **worker.py** This is the script that runs in the cloud on an AWS EC2 instance. Each worker processes one shard on one node. Workers are dynamically spawned by the master based on the number of shards.
-4. **tokproc.idl:** This contains the interface definitions for the CORBA distributed objects in IDL (Interface Definition Language). It contains the definitions for both the master and the worker.
-5. **config.ini:** All configuration parameters have been factored out into a config file. I have used the INI format for ease of I/O using Python's API.
+4. **tokproc.idl:** This contains the interface definitions for the CORBA distributed objects in [IDL](https://en.wikipedia.org/wiki/Interface_description_language) (Interface Definition Language). It contains the definitions for both the master and the worker.
+5. **config.ini:** All configuration parameters have been factored out into a config file. I have used an [INI file](https://en.wikipedia.org/wiki/INI_file) for ease of I/O using Python's API.
 
 The prerequisite Python dependencies and required AWS configurations are listed in the subsequent sections.
 
@@ -21,7 +21,7 @@ The prerequisite Python dependencies and required AWS configurations are listed 
 
 This project has been tested on Python version 3.9 and higher.
 
-+ **boto3:** Boto3 is the official Python SDK (Software Development Kit) for Amazon Web Services (AWS). Boto3 provides an intuitive API to access AWS resources and services, making tasks like launching EC2 instances, uploading files to S3, or managing cloud infrastructure straightforward. It is used in this project to dynamically launch instances to run workers on, and terminating them after use.
++ **[boto3](https://pypi.org/project/boto3/):** Boto3 is the official Python SDK (Software Development Kit) for Amazon Web Services (AWS). Boto3 provides an intuitive API to access AWS resources and services, making tasks like launching EC2 instances, uploading files to S3, or managing cloud infrastructure straightforward. It is used in this project to dynamically launch instances to run workers on, and terminating them after use.
 + **paramiko:** Paramiko is a Python library that provides an interface for working with SSH (Secure Shell) and SFTP (SSH File Transfer Protocol). It allows developers to create secure connections to remote machines, execute commands, and transfer files over the SSH protocol. Paramiko is widely used for automating remote server administration tasks, establishing encrypted tunnels, and securely communicating between systems. It is used in this project to access remote EC2 instances and start the worker scripts.
 + **nltk:** The Natural Language Toolkit (NLTK) is a powerful Python library used for natural language processing (NLP). It provides a suite of text-processing libraries for classification, tokenization, stemming, tagging, parsing, and semantic reasoning, among other tasks. NLTK also includes datasets, lexical resources, and tools to help linguists, developers, and researchers work with human language data. It is used in this project 
 + **tiktoken:** Tiktoken is a fast and efficient tokenization library designed for use with OpenAI’s language models. It focuses on breaking down text into tokens, which are the building blocks used by large language models (LLMs) such as GPT, BERT, etc. Tiktoken optimizes tokenization for specific model families (like GPT-3, GPT-4), ensuring compatibility and performance when feeding inputs into these models.
