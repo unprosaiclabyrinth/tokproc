@@ -54,13 +54,13 @@ After the aforementioned set up *required* to be able to run the project, the pr
 python3 master.py
 ```
 
-Requests can be sent to the master by running the client script locally on a different terminal. The system designed in the project requires master and client to be mutually local for it to run as expected. The motivation behind such a design is simplicity as greater focus lies on utlizing cloud services. The client can be run as:-
+Requests can be sent to the master by running the client script locally on a different terminal. The system designed in the project requires master and client to be mutually local for it to run as expected. The motivation behind such a design is simplicity as greater focus lies on utilizing cloud services. The client can be run as:-
 
 ```python
 python3 client.py
 ```
 
-The client accepts command-line arguments speciying input. The `-h` option can be used to elicit a help message from the client, which lists the acceptable command-line options.
+The client accepts command-line arguments specifying input. The `-h` option can be used to elicit a help message from the client, which lists the acceptable command-line options.
 
 ```python
 python3 client.py -h
@@ -75,4 +75,4 @@ hw1/ $ wc sherlock.txt
    11922  104506  587719 sherlock.txt
 ```
 
-The script `master-test.py` is a test verion of the master script. The instance to which it connects is hardcoded (the actual submission is `master.py`). Unit tests have been carried out for all operations by monitoring output on this remote instance. The instance ID is i-0f1b66547267d7f21 and this test instance is seen as running in the supplemental video. A toy dataset with around 100 words was used for testing dynamic launching of instances and running of workers.
+The script `master-test.py` is a test version of the master script. The instance to which it connects is hardcoded (the actual submission is `master.py`). Unit tests have been carried out for all operations by monitoring output on this remote instance. The instance ID is i-0f1b66547267d7f21 and this test instance is seen as running in the supplemental video. A toy dataset with around 100 words was used for testing dynamic launching of instances and running of workers.
