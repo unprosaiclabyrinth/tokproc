@@ -1,10 +1,7 @@
-# Details
-
-**Name:** Himanshu Dongre
-**Option:** Option 2 (CORBA + Python)
+Name:** Himanshu Dongre\
+**Option:** Option 2 (CORBA + Python)\
 **Video link:**
 
-# Preface
 
 **This project is NOT replicable in this state because it uses a custom AMI (Amazon Machine Image) to launch EC2 instances. It could be replicated with explicit access to this AMI.**
 
@@ -13,7 +10,7 @@
 This Git repo contains the Python implementation using CORBA of HW1 for CS441, Fall 2024, UIC. The major pieces are:-
 
 1. **client.py:** The client script. This sends a file or a string to the server to process.
-2. **master.py:** I have implemented the server as a master-worker model. The master receives the request from the client, splits the input into shards, and delegates each shard to an individual worker.
+2. **master.py:** I have implemented the server as a [master-worker](http://charm.cs.uiuc.edu/research/masterSlave) model. The master receives the request from the client, splits the input into shards, and delegates each shard to an individual worker.
 3. **worker.py** This is the script that runs in the cloud on an AWS EC2 instance. Each worker processes one shard on one node. Workers are dynamically spawned by the master based on the number of shards.
 4. **tokproc.idl:** This contains the interface definitions for the CORBA distributed objects in IDL (Interface Definition Language). It contains the definitions for both the master and the worker.
 5. **config.ini:** All configuration parameters have been factored out into a config file. I have used the INI format for ease of I/O using Python's API.
@@ -68,3 +65,14 @@ The client accepts command-line arguments speciying input. The `-h` option can b
 ```python
 python3 client.py -h
 ```
+
+# Testing
+
+This project has been tested on the dataset: plaintext version of the book *The Adventures of Sherlock Holmes* by **Sir Arthur Conan Doyle** downloaded from Project Gutenberg.
+
+```sh
+hw1/ $ wc sherlock.txt
+   11922  104506  587719 sherlock.txt
+```
+
+The script `master-test.py` is a test verion of the master script. The instance to which it connects is hardcoded (the actual submission is `master.py`). Unit tests have been carried out for all operations by monitoring output on this remote instance. The instance ID is i-0f1b66547267d7f21 and this test instance is seen as running in the supplemental video. A toy dataset with around 100 words was used for testing dynamic launching of instances and running of workers.
